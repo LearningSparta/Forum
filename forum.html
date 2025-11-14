@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kardium Forum</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #581c87 0%, #7e22ce 50%, #4338ca 100%);
+            min-height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js';
+        import { getDatabase, ref, onValue, push, set } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyA6wRBkYF-ru4OC_uDmLzhUKdbvlp6ghyk",
+            authDomain: "kardium-forum.firebaseapp.com",
+            projectId: "kardium-forum",
+            storageBucket: "kardium-forum.firebasestorage.app",
+            messagingSenderId: "401582590862",
+            appId: "1:401582590862:web:c90ae6b5f857da654632df"
+        };
+
+        let app, db;
+        let state = {
+            currentView: 'username',
+            username: localStorage.getItem('kardiumUsername') || '',
+            threads: [],
+            currentThread: null,
+            posts: [],
+            replyTo: null
+        };
+
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getDatabase(app);
+            
+            if (state.username) {
+                state.currentView = 'threads';
+                loadThreads();
+            }
+        } catch (error) {
+            console.error('Firebase initialization error:', error);
+            state.currentView = 'error';
+        }
+
+        function loadThreads() {
+            const threadsRef = ref(db, 'threads');
+            onValue(threadsRef, (snapshot) => {
+                const data = snapshot.val();
+                state.threads = [];
+                if (data) {
+                    Object.entries(data).forEach(([id, thread]) => {
+                        state.threads.push({ id, ...thread });
+                    });
+                    state.threads.sort((a, b) => b.timestamp - a.timestamp);
+                }
+                render();
+            });
+        }
+
+        function loadPosts(threadId) {
+            const postsRef = ref(db, `posts/${threadId}`);
+            onValue(postsRef, (snapshot) => {
+                const data = snapshot.val();
+                state.posts = [];
+                if (data) {
+                    Object.entries(data).forEach(([id, post]) => {
+                        state.posts.push({ id, ...post });
+                    });
+                    state.posts.sort((a, b) => a.timestamp - b.timestamp);
+                }
+                render();
+            });
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return 'Just now';
+            const now = Date.now();
+            const diff = now - timestamp;
+            const minutes = Math.floor(diff / 60000);
+            const hours = Math.floor(diff / 3600000);
+            const days = Math.floor(diff / 86400000);
+
+            if (minutes < 1) return 'Just now';
+            if (minutes < 60) return `${minutes}m ago`;
+            if (hours < 24) return `${hours}h ago`;
+            return `${days}d ago`;
+        }
+
+        function setUsername() {
+            const input = document.getElementById('usernameInput');
+            if (input.value.trim()) {
+                state.username = input.value.trim();
+                localStorage.setItem('kardiumUsername', state.username);
+                state.currentView = 'threads';
+                loadThreads();
+                render();
+            }
+        }
+
+        async function createThread() {
+            const title = document.getElementById('threadTitle').value.trim();
+            const content = document.getElementById('threadContent').value.trim();
+            
+            if (!title || !content) {
+                alert('Please fill in all fields');
+                return;
+            }
+
+            try {
+                const threadsRef = ref(db, 'threads');
+                const newThreadRef = push(threadsRef);
+                
+                await set(newThreadRef, {
+                    title,
+                    author: state.username,
+                    timestamp: Date.now(),
+                    postCount: 1
+                });
+
+                const threadId = newThreadRef.key;
+                const postsRef = ref(db, `posts/${threadId}`);
+                const newPostRef = push(postsRef);
+                
+                await set(newPostRef, {
+                    content,
+                    author: state.username,
+                    timestamp: Date.now(),
+                    isOriginalPost: true
+                });
+
+                state.currentView = 'threads';
+                render();
+            } catch (error) {
+                console.error('Error creating thread:', error);
+                alert('Error creating thread: ' + error.message);
+            }
+        }
+
+        async function createPost() {
+            const content = document.getElementById('postContent').value.trim();
+            
+            if (!content || !state.currentThread) {
+                alert('Please write something');
+                return;
+            }
+
+            try {
+                const postsRef = ref(db, `posts/${state.currentThread.id}`);
+                const newPostRef = push(postsRef);
+                
+                await set(newPostRef, {
+                    content,
+                    author: state.username,
+                    timestamp: Date.now(),
+                    replyTo: state.replyTo || null
+                });
+
+                const threadRef = ref(db, `threads/${state.currentThread.id}/postCount`);
+                await set(threadRef, (state.currentThread.postCount || 0) + 1);
+
+                document.getElementById('postContent').value = '';
+                state.replyTo = null;
+                render();
+            } catch (error) {
+                console.error('Error creating post:', error);
+                alert('Error creating post: ' + error.message);
+            }
+        }
+
+        function openThread(threadId) {
+            const thread = state.threads.find(t => t.id === threadId);
+            if (thread) {
+                state.currentThread = thread;
+                state.currentView = 'thread';
+                state.posts = [];
+                loadPosts(thread.id);
+                render();
+            }
+        }
+
+        function goToNewThread() {
+            state.currentView = 'newThread';
+            render();
+        }
+
+        function goToThreads() {
+            state.currentView = 'threads';
+            state.currentThread = null;
+            state.posts = [];
+            render();
+        }
+
+        function setReplyTo(postId) {
+            state.replyTo = postId;
+            render();
+        }
+
+        function cancelReply() {
+            state.replyTo = null;
+            render();
+        }
+
+        function render() {
+            const app = document.getElementById('app');
+            
+            if (state.currentView === 'error') {
+                app.innerHTML = `
+                    <div class="min-h-screen flex items-center justify-center p-4">
+                        <div class="bg-red-500/20 border border-red-500 text-white p-6 rounded-lg max-w-md">
+                            <h2 class="text-xl font-bold mb-2">Configuration Error</h2>
+                            <p>Failed to initialize Firebase. Please update the Firebase configuration in the code with your project details.</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            if (state.currentView === 'username') {
+                app.innerHTML = `
+                    <div class="min-h-screen flex items-center justify-center p-4">
+                        <div class="bg-white/10 backdrop-blur-lg border border-white/20 rounded-2xl p-8 max-w-md w-full">
+                            <h1 class="text-3xl font-bold text-white mb-6 text-center">Welcome to Kardium Forum</h1>
+                            <div class="space-y-4">
+                                <input
+                                    type="text"
+                                    id="usernameInput"
+                                    placeholder="Enter your username"
+                                    class="w-full px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                                />
+                                <button
+                                    id="enterBtn"
+                                    class="w-full bg-gradient-to-r from-purple-500 to-indigo-500 text-white py-3 rounded-lg font-semibold hover:from-purple-600 hover:to-indigo-600 transition-all"
+                                >
+                                    Enter Forum
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('enterBtn').addEventListener('click', setUsername);
+                document.getElementById('usernameInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') setUsername();
+                });
+                return;
+            }
+
+            let content = `
+                <div class="bg-black/30 backdrop-blur-sm border-b border-white/10">
+                    <div class="max-w-6xl mx-auto px-4 py-4">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <svg class="text-purple-300" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                                </svg>
+                                <h1 class="text-2xl font-bold text-white">Kardium Forum</h1>
+                            </div>
+                            <div class="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full">
+                                <svg class="text-purple-300" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                <span class="text-white font-medium">${state.username}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="max-w-6xl mx-auto px-4 py-8">
+            `;
+
+            if (state.currentView === 'threads') {
+                content += `
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-2xl font-bold text-white">Discussion Threads</h2>
+                            <button
+                                id="newThreadBtn"
+                                class="bg-gradient-to-r from-purple-500 to-indigo-500 text-white px-6 py-3 rounded-lg font-semibold hover:from-purple-600 hover:to-indigo-600 transition-all flex items-center gap-2"
+                            >
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                                </svg>
+                                New Thread
+                            </button>
+                        </div>
+                `;
+
+                if (state.threads.length === 0) {
+                    content += `
+                        <div class="bg-white/10 backdrop-blur-lg border border-white/20 rounded-xl p-12 text-center">
+                            <svg class="mx-auto mb-4 text-purple-300" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                            <p class="text-white/80 text-lg">No threads yet. Be the first to start a discussion!</p>
+                        </div>
+                    `;
+                } else {
+                    state.threads.forEach(thread => {
+                        content += `
+                            <div
+                                class="thread-item bg-white/10 backdrop-blur-lg border border-white/20 rounded-xl p-6 hover:bg-white/15 transition-all cursor-pointer"
+                                data-thread-id="${thread.id}"
+                            >
+                                <h3 class="text-xl font-bold text-white mb-2">${thread.title}</h3>
+                                <div class="flex items-center gap-4 text-white/60 text-sm">
+                                    <div class="flex items-center gap-1">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                            <circle cx="12" cy="7" r="4"></circle>
+                                        </svg>
+                                        <span>${thread.author}</span>
+                                    </div>
+                                    <div class="flex items-center gap-1">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <circle cx="12" cy="12" r="10"></circle>
+                                            <polyline points="12 6 12 12 16 14"></polyline>
+                                        </svg>
+                                        <span>${formatTime(thread.timestamp)}</span>
+                                    </div>
+                                    <div class="flex items-center gap-1">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                                        </svg>
+                                        <span>${thread.postCount || 0} posts</span>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+
+                content += `</div>`;
+            }
+
+            if (state.currentView === 'newThread') {
+                content += `
+                    <div class="space-y-4">
+                        <button
+                            id="backToThreadsBtn"
+                            class="flex items-center gap-2 text-white/80 hover:text-white transition-colors mb-4"
+                        >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="19" y1="12" x2="5" y2="12"></line>
+                                <polyline points="12 19 5 12 12 5"></polyline>
+                            </svg>
+                            Back to Threads
+                        </button>
+                        <div class="bg-white/10 backdrop-blur-lg border border-white/20 rounded-xl p-6">
+                            <h2 class="text-2xl font-bold text-white mb-6">Create New Thread</h2>
+                            <div class="space-y-4">
+                                <input
+                                    type="text"
+                                    id="threadTitle"
+                                    placeholder="Thread Title"
+                                    class="w-full px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                                />
+                                <textarea
+                                    id="threadContent"
+                                    placeholder="Start the discussion..."
+                                    rows="8"
+                                    class="w-full px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none"
+                                ></textarea>
+                                <button
+                                    id="createThreadBtn"
+                                    class="bg-gradient-to-r from-purple-500 to-indigo-500 text-white px-6 py-3 rounded-lg font-semibold hover:from-purple-600 hover:to-indigo-600 transition-all flex items-center gap-2"
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                    </svg>
+                                    Create Thread
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (state.currentView === 'thread' && state.currentThread) {
+                content += `
+                    <div class="space-y-4">
+                        <button
+                            id="backFromThreadBtn"
+                            class="flex items-center gap-2 text-white/80 hover:text-white transition-colors mb-4"
+                        >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="19" y1="12" x2="5" y2="12"></line>
+                                <polyline points="12 19 5 12 12 5"></polyline>
+                            </svg>
+                            Back to Threads
+                        </button>
+                        <div class="bg-white/10 backdrop-blur-lg border border-white/20 rounded-xl p-6 mb-6">
+                            <h2 class="text-3xl font-bold text-white mb-4">${state.currentThread.title}</h2>
+                            <div class="flex items-center gap-4 text-white/60 text-sm">
+                                <div class="flex items-center gap-1">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                        <circle cx="12" cy="7" r="4"></circle>
+                                    </svg>
+                                    <span>${state.currentThread.author}</span>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"></circle>
+                                        <polyline points="12 6 12 12 16 14"></polyline>
+                                    </svg>
+                                    <span>${formatTime(state.currentThread.timestamp)}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="space-y-4">
+                `;
+
+                state.posts.forEach(post => {
+                    const borderClass = post.isOriginalPost ? 'border-purple-400/50' : '';
+                    const marginClass = post.replyTo ? 'ml-8' : '';
+                    content += `
+                        <div class="bg-white/10 backdrop-blur-lg border border-white/20 rounded-xl p-6 ${borderClass} ${marginClass}">
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="flex items-center gap-2">
+                                    <div class="bg-purple-500/30 rounded-full p-2">
+                                        <svg class="text-purple-300" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                            <circle cx="12" cy="7" r="4"></circle>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-white font-semibold">${post.author}</p>
+                                        <p class="text-white/60 text-sm">${formatTime(post.timestamp)}</p>
+                                    </div>
+                                    ${post.isOriginalPost ? '<span class="bg-purple-500/50 text-white text-xs px-2 py-1 rounded">OP</span>' : ''}
+                                </div>
+                            </div>
+                            <p class="text-white/90 whitespace-pre-wrap mb-3">${post.content}</p>
+                            <button
+                                class="reply-btn text-purple-300 text-sm hover:text-purple-200 transition-colors"
+                                data-post-id="${post.id}"
+                            >
+                                Reply
+                            </button>
+                        </div>
+                    `;
+                });
+
+                content += `
+                        </div>
+                        <div class="bg-white/10 backdrop-blur-lg border border-white/20 rounded-xl p-6 sticky bottom-4">
+                            ${state.replyTo ? `
+                                <div class="mb-3 flex items-center gap-2 text-white/80 text-sm">
+                                    <span>Replying to post</span>
+                                    <button
+                                        id="cancelReplyBtn"
+                                        class="text-purple-300 hover:text-purple-200"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            ` : ''}
+                            <div class="flex gap-3">
+                                <textarea
+                                    id="postContent"
+                                    placeholder="Write a response..."
+                                    rows="3"
+                                    class="flex-1 px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none"
+                                ></textarea>
+                                <button
+                                    id="createPostBtn"
+                                    class="bg-gradient-to-r from-purple-500 to-indigo-500 text-white px-6 py-3 rounded-lg font-semibold hover:from-purple-600 hover:to-indigo-600 transition-all self-end"
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            content += `</div>`;
+            app.innerHTML = content;
+
+            // Add event listeners after rendering
+            if (state.currentView === 'threads') {
+                const newThreadBtn = document.getElementById('newThreadBtn');
+                if (newThreadBtn) {
+                    newThreadBtn.addEventListener('click', goToNewThread);
+                }
+
+                const threadItems = document.querySelectorAll('.thread-item');
+                threadItems.forEach(item => {
+                    item.addEventListener('click', () => {
+                        const threadId = item.getAttribute('data-thread-id');
+                        openThread(threadId);
+                    });
+                });
+            }
+
+            if (state.currentView === 'newThread') {
+                const backBtn = document.getElementById('backToThreadsBtn');
+                if (backBtn) backBtn.addEventListener('click', goToThreads);
+
+                const createBtn = document.getElementById('createThreadBtn');
+                if (createBtn) createBtn.addEventListener('click', createThread);
+            }
+
+            if (state.currentView === 'thread') {
+                const backBtn = document.getElementById('backFromThreadBtn');
+                if (backBtn) backBtn.addEventListener('click', goToThreads);
+
+                const createPostBtn = document.getElementById('createPostBtn');
+                if (createPostBtn) createPostBtn.addEventListener('click', createPost);
+
+                const cancelReplyBtn = document.getElementById('cancelReplyBtn');
+                if (cancelReplyBtn) cancelReplyBtn.addEventListener('click', cancelReply);
+
+                const replyBtns = document.querySelectorAll('.reply-btn');
+                replyBtns.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const postId = btn.getAttribute('data-post-id');
+                        setReplyTo(postId);
+                    });
+                });
+            }
+        }
+
+        // Initial render
+        render();
+    </script>
+</body>
+</html>
